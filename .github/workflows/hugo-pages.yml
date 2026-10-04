@@ -1,0 +1,101 @@
+name: Build and deploy Hugo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+env:
+  HUGO_VERSION: '0.147.8'
+  TZ: Asia/Shanghai
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check theme access token
+        env:
+          THEME_REPO_TOKEN: ${{ secrets.THEME_REPO_TOKEN }}
+        run: |
+          if [[ -z "$THEME_REPO_TOKEN" ]]; then
+            echo "::error::Add the THEME_REPO_TOKEN repository secret with read access to FarseaSH/my-personal-blog-theme."
+            exit 1
+          fi
+
+      - name: Checkout private Hugo project
+        uses: actions/checkout@v7
+        with:
+          repository: FarseaSH/my-personal-blog-theme
+          token: ${{ secrets.THEME_REPO_TOKEN }}
+          path: site
+          persist-credentials: false
+
+      # Checkout the exact content commit that triggered this workflow.
+      - name: Checkout blog content
+        uses: actions/checkout@v7
+        with:
+          path: site/content
+          persist-credentials: false
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Install Hugo Extended
+        run: |
+          install_dir="$RUNNER_TEMP/hugo-bin"
+          mkdir -p "$install_dir"
+          cd "$install_dir"
+          release_url="https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}"
+          archive="hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" "$release_url/$archive"
+          curl --fail --location --retry 3 --output checksums.txt "$release_url/hugo_${HUGO_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing checksums.txt
+          tar -xzf "$archive" hugo
+          echo "$install_dir" >> "$GITHUB_PATH"
+          ./hugo version
+
+      - name: Build website
+        working-directory: site
+        env:
+          HUGO_ENVIRONMENT: production
+          HUGO_ENV: production
+          HUGO_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          hugo --gc --minify \
+            --baseURL "${HUGO_BASE_URL%/}/" \
+            --cacheDir "$RUNNER_TEMP/hugo-cache" \
+            --destination "$RUNNER_TEMP/hugo-public"
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/hugo-public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
